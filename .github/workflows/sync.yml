@@ -1,0 +1,105 @@
+name: Check Upstream & Sync to AUR
+
+on:
+  schedule:
+    # Run every 6 hours
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Force update even if versions match'
+        type: boolean
+        default: false
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  check-and-sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+
+    steps:
+      - name: Require AUR deploy key
+        run: |
+          if [ -z "$AUR_SSH_PRIVATE_KEY" ]; then
+            echo "::error::AUR_SSH_PRIVATE_KEY secret is not set; AUR cannot be updated."
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Check upstream release
+        id: upstream
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          FORCE_FLAG=""
+          if [ "${{ github.event.inputs.force }}" = "true" ]; then
+            FORCE_FLAG="--force"
+          fi
+          python3 scripts/check-upstream.py $FORCE_FLAG
+
+      # Compare against what the AUR actually serves rather than the last GitHub
+      # commit, so a failed or skipped AUR push is retried on the next run.
+      - name: Detect AUR drift
+        id: aur
+        run: |
+          if git clone --depth 1 https://aur.archlinux.org/zuse-bin.git "$RUNNER_TEMP/aur" 2>/dev/null; then
+            if cmp -s PKGBUILD "$RUNNER_TEMP/aur/PKGBUILD"; then
+              echo "AUR PKGBUILD matches."
+              echo "deploy=false" >> "$GITHUB_OUTPUT"
+            else
+              diff -u "$RUNNER_TEMP/aur/PKGBUILD" PKGBUILD || true
+              echo "deploy=true" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "AUR package does not exist yet; deploying."
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          fi
+          pkgver=$(sed -n 's/^pkgver=//p' PKGBUILD)
+          pkgrel=$(sed -n 's/^pkgrel=//p' PKGBUILD)
+          echo "version=${pkgver}-${pkgrel}" >> "$GITHUB_OUTPUT"
+
+      - name: Build package and generate .SRCINFO in Arch Linux container
+        if: steps.upstream.outputs.updated == 'true' || steps.aur.outputs.deploy == 'true'
+        run: |
+          docker run --rm -v "$PWD":/work:ro archlinux:base-devel \
+            bash /work/scripts/arch-build.sh > "$RUNNER_TEMP/SRCINFO"
+          mv "$RUNNER_TEMP/SRCINFO" .SRCINFO
+
+      - name: Deploy to AUR
+        if: steps.aur.outputs.deploy == 'true'
+        uses: KSXGitHub/github-actions-deploy-aur@v3
+        with:
+          pkgname: zuse-bin
+          pkgbuild: ./PKGBUILD
+          commit_username: minpeter
+          commit_email: kali2005611@gmail.com
+          commit_message: "Update to ${{ steps.aur.outputs.version }}"
+          ssh_private_key: ${{ env.AUR_SSH_PRIVATE_KEY }}
+
+      # Runs after the AUR deploy: if the AUR push fails, GitHub keeps the old
+      # PKGBUILD and the next run redoes the whole update.
+      - name: Commit and push changes to GitHub
+        if: steps.upstream.outputs.updated == 'true' || steps.aur.outputs.deploy == 'true'
+        run: |
+          if git diff --quiet -- PKGBUILD .SRCINFO; then
+            echo "GitHub already up to date."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add PKGBUILD .SRCINFO
+          git commit -m "Update to ${{ steps.aur.outputs.version }}"
+          git push origin master
