@@ -36,17 +36,19 @@ conflicts=('zuse' 'zuse-git')
 options=('!debug' '!strip')
 makedepends=('libarchive')
 
-_deb='zuse.deb'
-source_x86_64=("${_deb}::https://github.com/opcodehq/zuse/releases/download/v${pkgver}/zuse-${pkgver}-linux-x86_64.deb")
-source_aarch64=("${_deb}::https://github.com/opcodehq/zuse/releases/download/v${pkgver}/zuse-${pkgver}-linux-aarch64.deb")
+source_x86_64=("https://github.com/opcodehq/zuse/releases/download/v${pkgver}/zuse-${pkgver}-linux-x86_64.deb")
+source_aarch64=("https://github.com/opcodehq/zuse/releases/download/v${pkgver}/zuse-${pkgver}-linux-aarch64.deb")
 sha256sums_x86_64=('8d143cb1e6b573f4c44b9110743fe73c62e43665da22cec4c8f2ba01da9a5a28')
 sha256sums_aarch64=('86bdb204857f00acd2d8bf444882ea881b45e3792724477894fb7cb250ac31c7')
-noextract=("${_deb}")
+noextract=(
+  "zuse-${pkgver}-linux-x86_64.deb"
+  "zuse-${pkgver}-linux-aarch64.deb"
+)
 
 prepare() {
   rm -rf "${srcdir}/deb"
   mkdir -p "${srcdir}/deb/data"
-  bsdtar -xf "${srcdir}/${_deb}" -C "${srcdir}/deb"
+  bsdtar -xf "${srcdir}/zuse-${pkgver}-linux-${CARCH}.deb" -C "${srcdir}/deb"
   bsdtar -xf "${srcdir}"/deb/data.tar.* -C "${srcdir}/deb/data"
 }
 
